@@ -101,6 +101,7 @@ class DeepLabV3PlusHead(nn.Module):
                 # ASPP module
                 if train_size is not None:
                     train_h, train_w = train_size
+                    print('train size: ', train_h, train_w)
                     encoder_stride = in_strides[-1]
                     if train_h % encoder_stride or train_w % encoder_stride:
                         raise ValueError("Crop size need to be divisible by encoder stride.")

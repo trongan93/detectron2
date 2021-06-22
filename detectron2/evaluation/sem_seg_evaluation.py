@@ -8,6 +8,7 @@ from collections import OrderedDict
 import PIL.Image as Image
 import pycocotools.mask as mask_util
 import torch
+import skimage.io as io
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.utils.comm import all_gather, is_main_process, synchronize
@@ -97,7 +98,8 @@ class SemSegEvaluator(DatasetEvaluator):
                 (self._num_classes + 1) * pred.reshape(-1) + gt.reshape(-1),
                 minlength=self._conf_matrix.size,
             ).reshape(self._conf_matrix.shape)
-
+            #added by trongan93
+            self.write_seg_mask(input["file_name"],pred)
             self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
 
     def evaluate(self):
@@ -182,3 +184,9 @@ class SemSegEvaluator(DatasetEvaluator):
                 {"file_name": input_file_name, "category_id": dataset_id, "segmentation": mask_rle}
             )
         return json_list
+    
+    def write_seg_mask(self, input_file_name, mask):
+        path = os.path.split(input_file_name)
+        output_dir = '/mnt/d/RarePlanes/datasets/real/trongan_output_deeplab_eval'
+        output_file = os.path.join(output_dir,path[1])
+        io.imsave(output_file,mask.astype(np.uint8),check_contrast=False)

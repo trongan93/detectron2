@@ -18,7 +18,7 @@ from detectron2.data import DatasetMapper, MetadataCatalog, build_detection_trai
 from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
 from detectron2.evaluation import CityscapesSemSegEvaluator, DatasetEvaluators, SemSegEvaluator
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
-
+from registry_dataset import registry_dataset_semantic_segmentation
 
 def build_sem_seg_train_aug(cfg):
     augs = [
@@ -111,6 +111,7 @@ def setup(args):
 
 
 def main(args):
+    registry_dataset_semantic_segmentation()
     cfg = setup(args)
 
     if args.eval_only:
