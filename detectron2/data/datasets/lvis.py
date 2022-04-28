@@ -10,6 +10,7 @@ from detectron2.utils.file_io import PathManager
 from .builtin_meta import _get_coco_instances_meta
 from .lvis_v0_5_categories import LVIS_CATEGORIES as LVIS_V0_5_CATEGORIES
 from .lvis_v1_categories import LVIS_CATEGORIES as LVIS_V1_CATEGORIES
+from .lvis_v1_category_image_count import LVIS_CATEGORY_IMAGE_COUNT as LVIS_V1_CATEGORY_IMAGE_COUNT
 
 """
 This file contains functions to parse LVIS-format annotations into dicts in the
@@ -37,7 +38,7 @@ def register_lvis_instances(name, metadata, json_file, image_root):
     )
 
 
-def load_lvis_json(json_file, image_root, dataset_name=None):
+def load_lvis_json(json_file, image_root, dataset_name=None, extra_annotation_keys=None):
     """
     Load a json file in LVIS's annotation format.
 
@@ -47,6 +48,9 @@ def load_lvis_json(json_file, image_root, dataset_name=None):
         dataset_name (str): the name of the dataset (e.g., "lvis_v0.5_train").
             If provided, this function will put "thing_classes" into the metadata
             associated with this dataset.
+        extra_annotation_keys (list[str]): list of per-annotation keys that should also be
+            loaded into the dataset dict (besides "bbox", "bbox_mode", "category_id",
+            "segmentation"). The values for these keys will be returned as-is.
 
     Returns:
         list[dict]: a list of dicts in Detectron2 standard format. (See
@@ -106,6 +110,13 @@ def load_lvis_json(json_file, image_root, dataset_name=None):
 
     logger.info("Loaded {} images in the LVIS format from {}".format(len(imgs_anns), json_file))
 
+    if extra_annotation_keys:
+        logger.info(
+            "The following extra annotation keys will be loaded: {} ".format(extra_annotation_keys)
+        )
+    else:
+        extra_annotation_keys = []
+
     def get_file_name(img_root, img_dict):
         # Determine the path including the split folder ("train2017", "val2017", "test2017") from
         # the coco_url field. Example:
@@ -145,6 +156,8 @@ def load_lvis_json(json_file, image_root, dataset_name=None):
             ), "Annotation contains an invalid polygon with < 3 points"
             assert len(segm) > 0
             obj["segmentation"] = segm
+            for extra_ann_key in extra_annotation_keys:
+                obj[extra_ann_key] = anno[extra_ann_key]
             objs.append(obj)
         record["annotations"] = objs
         dataset_dicts.append(record)
@@ -193,7 +206,7 @@ def _get_lvis_instances_meta_v1():
     # Ensure that the category list is sorted by id
     lvis_categories = sorted(LVIS_V1_CATEGORIES, key=lambda x: x["id"])
     thing_classes = [k["synonyms"][0] for k in lvis_categories]
-    meta = {"thing_classes": thing_classes}
+    meta = {"thing_classes": thing_classes, "class_image_count": LVIS_V1_CATEGORY_IMAGE_COUNT}
     return meta
 
 

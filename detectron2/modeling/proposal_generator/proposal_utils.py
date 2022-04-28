@@ -4,19 +4,19 @@ import math
 from typing import List, Tuple, Union
 import torch
 
-from detectron2.layers import batched_nms, cat
+from detectron2.layers import batched_nms, cat, move_device_like
 from detectron2.structures import Boxes, Instances
-from detectron2.utils.env import TORCH_VERSION
 
 logger = logging.getLogger(__name__)
 
 
 def _is_tracing():
+    # (fixed in TORCH_VERSION >= 1.9)
     if torch.jit.is_scripting():
         # https://github.com/pytorch/pytorch/issues/47379
         return False
     else:
-        return TORCH_VERSION >= (1, 7) and torch.jit.is_tracing()
+        return torch.jit.is_tracing()
 
 
 def find_top_rpn_proposals(
@@ -58,13 +58,17 @@ def find_top_rpn_proposals(
             objectness score in descending order.
     """
     num_images = len(image_sizes)
-    device = proposals[0].device
+    device = (
+        proposals[0].device
+        if torch.jit.is_scripting()
+        else ("cpu" if torch.jit.is_tracing() else proposals[0].device)
+    )
 
     # 1. Select top-k anchor for every level and every image
     topk_scores = []  # #lvl Tensor, each of shape N x topk
     topk_proposals = []
     level_ids = []  # #lvl Tensor, each of shape (topk,)
-    batch_idx = torch.arange(num_images, device=device)
+    batch_idx = move_device_like(torch.arange(num_images, device=device), proposals[0])
     for level_id, (proposals_i, logits_i) in enumerate(zip(proposals, pred_objectness_logits)):
         Hi_Wi_A = logits_i.shape[1]
         if isinstance(Hi_Wi_A, torch.Tensor):  # it's a tensor in tracing
@@ -72,18 +76,19 @@ def find_top_rpn_proposals(
         else:
             num_proposals_i = min(Hi_Wi_A, pre_nms_topk)
 
-        # sort is faster than topk: https://github.com/pytorch/pytorch/issues/22812
-        # topk_scores_i, topk_idx = logits_i.topk(num_proposals_i, dim=1)
-        logits_i, idx = logits_i.sort(descending=True, dim=1)
-        topk_scores_i = logits_i.narrow(1, 0, num_proposals_i)
-        topk_idx = idx.narrow(1, 0, num_proposals_i)
+        topk_scores_i, topk_idx = logits_i.topk(num_proposals_i, dim=1)
 
         # each is N x topk
         topk_proposals_i = proposals_i[batch_idx[:, None], topk_idx]  # N x topk x 4
 
         topk_proposals.append(topk_proposals_i)
         topk_scores.append(topk_scores_i)
-        level_ids.append(torch.full((num_proposals_i,), level_id, dtype=torch.int64, device=device))
+        level_ids.append(
+            move_device_like(
+                torch.full((num_proposals_i,), level_id, dtype=torch.int64, device=device),
+                proposals[0],
+            )
+        )
 
     # 2. Concat all levels together
     topk_scores = cat(topk_scores, dim=1)

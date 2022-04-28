@@ -1,5 +1,4 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-import logging
 import torch
 import torch.distributed as dist
 from fvcore.nn.distributed import differentiable_all_reduce
@@ -143,6 +142,9 @@ def get_norm(norm, out_channels):
             # for debugging:
             "nnSyncBN": nn.SyncBatchNorm,
             "naiveSyncBN": NaiveSyncBatchNorm,
+            # expose stats_mode N as an option to caller, required for zero-len inputs
+            "naiveSyncBN_N": lambda channels: NaiveSyncBatchNorm(channels, stats_mode="N"),
+            "LN": lambda channels: LayerNorm(channels),
         }[norm]
     return norm(out_channels)
 
@@ -226,3 +228,73 @@ class NaiveSyncBatchNorm(BatchNorm2d):
         if half_input:
             ret = ret.half()
         return ret
+
+
+class CycleBatchNormList(nn.ModuleList):
+    """
+    Implement domain-specific BatchNorm by cycling.
+
+    When a BatchNorm layer is used for multiple input domains or input
+    features, it might need to maintain a separate test-time statistics
+    for each domain. See Sec 5.2 in :paper:`rethinking-batchnorm`.
+
+    This module implements it by using N separate BN layers
+    and it cycles through them every time a forward() is called.
+
+    NOTE: The caller of this module MUST guarantee to always call
+    this module by multiple of N times. Otherwise its test-time statistics
+    will be incorrect.
+    """
+
+    def __init__(self, length: int, bn_class=nn.BatchNorm2d, **kwargs):
+        """
+        Args:
+            length: number of BatchNorm layers to cycle.
+            bn_class: the BatchNorm class to use
+            kwargs: arguments of the BatchNorm class, such as num_features.
+        """
+        self._affine = kwargs.pop("affine", True)
+        super().__init__([bn_class(**kwargs, affine=False) for k in range(length)])
+        if self._affine:
+            # shared affine, domain-specific BN
+            channels = self[0].num_features
+            self.weight = nn.Parameter(torch.ones(channels))
+            self.bias = nn.Parameter(torch.zeros(channels))
+        self._pos = 0
+
+    def forward(self, x):
+        ret = self[self._pos](x)
+        self._pos = (self._pos + 1) % len(self)
+
+        if self._affine:
+            w = self.weight.reshape(1, -1, 1, 1)
+            b = self.bias.reshape(1, -1, 1, 1)
+            return ret * w + b
+        else:
+            return ret
+
+    def extra_repr(self):
+        return f"affine={self._affine}"
+
+
+class LayerNorm(nn.Module):
+    """
+    A LayerNorm variant, popularized by Transformers, that performs point-wise mean and
+    variance normalization over the channel dimension for inputs that have shape
+    (batch_size, channels, height, width).
+    https://github.com/facebookresearch/ConvNeXt/blob/d1fa8f6fef0a165b27399986cc2bdacc92777e40/models/convnext.py#L119  # noqa B950
+    """
+
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.normalized_shape = (normalized_shape,)
+
+    def forward(self, x):
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight[:, None, None] * x + self.bias[:, None, None]
+        return x
